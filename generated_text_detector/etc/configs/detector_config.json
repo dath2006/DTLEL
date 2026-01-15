@@ -1,0 +1,4 @@
+{
+    "text_detector_model": "SuperAnnotate/ai-detector",
+    "code_default_probability": 0.5
+}
