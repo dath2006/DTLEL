@@ -7,7 +7,7 @@ app = FastAPI(title="Hybrid AI & Plagiarism Detection System", version="1.0.0")
 # CORS setup (Allow frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000","https://1ts534ls-3000.inc1.devtunnels.ms","https://5b1e39f92b74.ngrok-free.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

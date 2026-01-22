@@ -1,94 +1,187 @@
 """
-Unified Analysis Pipeline (v2.0)
+Unified Analysis Pipeline (v3.0 - Optimized)
 
 Combines:
-1. Sentence-based sliding window AI detection (Binoculars)
+1. SuperAnnotate RoBERTa Large for AI detection (primary)
 2. Stylometric N-gram analysis
-3. Legacy chunk-based RoBERTa fallback
+3. Statistical metrics (perplexity, burstiness) - cached per sentence
 4. Plagiarism detection (FAISS + SBERT)
+
+Optimizations:
+- Removed redundant ai_detector (RoBERTa Base)
+- Perplexity calculated once and reused for flux/burstiness
 """
 
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query
 from app.utils.text_extract import extract_text_from_file
 from app.utils.chunking import chunk_text
 from app.utils.sentence_chunking import sentence_splitter
-from app.engine import plagiarism_engine, ai_detector
+from app.engine import plagiarism_engine
 from app.engine.stylometry import phrase_fingerprint
+from app.engine.superannotate_detector import superannotate_detector
 from app.models import (
     AnalysisReport, AnalysisSegment, AnalysisMetrics, 
     TextAnalysisRequest, SentenceScore, StylemetryReport
 )
 import uuid
+import numpy as np
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List, Tuple
 
 router = APIRouter()
 
 
+# ============================================================================
+# STATISTICAL METRICS HELPERS (Optimized)
+# These functions use lightweight calculations - perplexity via GPT-2 is moved
+# to a lazy-loaded singleton to avoid loading it if not needed.
+# ============================================================================
+
+_ppl_model = None
+_ppl_tokenizer = None
+
+def _get_perplexity_model():
+    """Lazy-load GPT-2 for perplexity calculation."""
+    global _ppl_model, _ppl_tokenizer
+    if _ppl_model is None:
+        import torch
+        from transformers import AutoTokenizer, AutoModelForCausalLM
+        from app.config import settings
+        print("Loading Perplexity Model (GPT-2)...")
+        _ppl_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+        _ppl_model = AutoModelForCausalLM.from_pretrained("gpt2").to(settings.DEVICE)
+        _ppl_model.eval()
+    return _ppl_model, _ppl_tokenizer
+
+
+def calculate_sentence_perplexities(sentences: List[str]) -> List[float]:
+    """
+    Calculate perplexity for a list of sentences in one pass.
+    Returns list of perplexity values (one per sentence).
+    """
+    import torch
+    from app.config import settings
+    
+    model, tokenizer = _get_perplexity_model()
+    results = []
+    
+    for sentence in sentences:
+        if len(sentence.split()) < 4:
+            results.append(0.0)
+            continue
+            
+        try:
+            encodings = tokenizer(sentence[:512], return_tensors="pt").to(settings.DEVICE)
+            with torch.no_grad():
+                outputs = model(encodings.input_ids, labels=encodings.input_ids)
+                ppl = torch.exp(outputs.loss).item()
+            results.append(ppl if ppl < 10000 else 0.0)  # Cap unreasonable values
+        except:
+            results.append(0.0)
+    
+    return results
+
+
+def calculate_burstiness(sentence_lengths: List[int]) -> float:
+    """Calculate burstiness from pre-computed sentence lengths."""
+    if len(sentence_lengths) < 2:
+        return 0.0
+    std_dev = np.std(sentence_lengths)
+    mean = np.mean(sentence_lengths)
+    return float(std_dev / mean) if mean > 0 else 0.0
+
+
+def calculate_perplexity_flux(perplexities: List[float]) -> float:
+    """Calculate flux from pre-computed perplexity values."""
+    valid_ppls = [p for p in perplexities if p > 0]
+    if len(valid_ppls) < 2:
+        return 0.0
+    mean_ppl = np.mean(valid_ppls)
+    std_ppl = np.std(valid_ppls)
+    return float(std_ppl / mean_ppl) if mean_ppl > 0 else 0.0
 
 
 
 def process_analysis(text: str) -> AnalysisReport:
     """
-    Core analysis logic with upgraded detection pipeline.
+    Core analysis logic with optimized detection pipeline (v3.0).
     
     Pipeline:
-    1. Sentence-based sliding window analysis (RoBERTa)
-    2. Stylometric N-gram analysis
-    3. Legacy chunk-based detection (fallback + plagiarism)
-    4. Aggregate all signals into final report
+    1. Extract sentences and compute perplexity ONCE (cached)
+    2. SuperAnnotate RoBERTa Large for AI detection
+    3. Stylometric N-gram analysis
+    4. Plagiarism detection (FAISS + SBERT)
+    5. Compute statistical metrics from cached values
     """
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text provided")
     
-    # ========== 1. Sentence-Based AI Detection ==========
-    # Use RoBERTa for sentence-level scoring (lightweight fallback)
-    sentence_scores_list = []
-    ai_sentence_count = 0
+    # ========== 0. Extract Sentences (for all downstream use) ==========
+    sentences = []  # List of (text, start, end) tuples
+    sentence_texts = []
+    sentence_lengths = []
     
     try:
         windows, sentences = sentence_splitter.create_windows(text)
-        
-        if windows and sentences:
-            # Score each sentence individually with RoBERTa
-            sentence_texts = [s[0] for s in sentences]  # (text, start, end)
-            window_scores = ai_detector.detect_probability(sentence_texts)
-            
-            # Aggregate to sentence level
-            sentence_results = sentence_splitter.aggregate_to_sentences(
-                windows, window_scores, sentences, threshold=0.5
-            )
-            
-            # Convert to response model
-            for sr in sentence_results:
-                # Calculate local perplexity for Granular Insights
-                local_ppl = 0.0
-                try:
-                    if len(sr.text.split()) > 3: # Only distinct check for meaningful sentences
-                         local_ppl = ai_detector.calculate_perplexity(sr.text)
-                except:
-                    pass
-
-                sentence_scores_list.append(SentenceScore(
-                    text=sr.text,
-                    index=sr.index,
-                    start_char=sr.start_char,
-                    end_char=sr.end_char,
-                    ai_probability=sr.score,
-                    is_ai_generated=sr.is_ai_generated,
-                    perplexity=round(local_ppl, 2),
-                    window_count=sr.window_count
-                ))
-                if sr.is_ai_generated:
-                    ai_sentence_count += 1
-                
+        if sentences:
+            sentence_texts = [s[0] for s in sentences]
+            sentence_lengths = [len(s[0].split()) for s in sentences]
     except Exception as e:
-        print(f"Sentence analysis failed: {e}")
+        print(f"Sentence extraction failed: {e}")
+        # Fallback: treat whole text as one sentence
+        sentences = [(text, 0, len(text))]
+        sentence_texts = [text]
+        sentence_lengths = [len(text.split())]
+    
+    # ========== 1. Calculate Perplexity ONCE (Cached for reuse) ==========
+    sentence_perplexities = []
+    try:
+        sentence_perplexities = calculate_sentence_perplexities(sentence_texts)
+    except Exception as e:
+        print(f"Perplexity calculation failed: {e}")
+        sentence_perplexities = [0.0] * len(sentence_texts)
+    
+    # ========== 2. SuperAnnotate AI Detection (Primary) ==========
+    superannotate_score_val = 0.0
+    try:
+        superannotate_score_val = superannotate_detector.detect(text)
+    except Exception as e:
+        print(f"SuperAnnotate analysis failed: {e}")
         import traceback
         traceback.print_exc()
+    
+    # ========== 3. Build Sentence Scores ==========
+    # Use SuperAnnotate's global score as base, modulated by local perplexity
+    sentence_scores_list = []
+    ai_sentence_count = 0
+    
+    for i, (sent_text, start, end) in enumerate(sentences):
+        ppl = sentence_perplexities[i] if i < len(sentence_perplexities) else 0.0
+        
+        # Use global AI score as baseline for each sentence
+        # Low perplexity (< 30) suggests AI, boost the score
+        ppl_modifier = 0.0
+        if ppl > 0 and ppl < 30:
+            ppl_modifier = 0.1  # Slight boost for low perplexity
+        
+        sentence_ai_prob = min(1.0, superannotate_score_val + ppl_modifier)
+        is_ai = sentence_ai_prob > 0.5
+        
+        sentence_scores_list.append(SentenceScore(
+            text=sent_text,
+            index=i,
+            start_char=start,
+            end_char=end,
+            ai_probability=round(sentence_ai_prob, 4),
+            is_ai_generated=is_ai,
+            perplexity=round(ppl, 2),
+            window_count=1  # No windowing needed with SuperAnnotate
+        ))
+        if is_ai:
+            ai_sentence_count += 1
 
     
-    # ========== 2. Stylometric Analysis ==========
+    # ========== 4. Stylometric Analysis ==========
     stylometry_report = None
     try:
         style_result = phrase_fingerprint.analyze(text)
@@ -102,18 +195,8 @@ def process_analysis(text: str) -> AnalysisReport:
         )
     except Exception as e:
         print(f"Stylometry analysis failed: {e}")
-        
-    # ========== 2.6. SuperAnnotate Detection ==========
-    superannotate_score_val = 0.0
-    try:
-        from app.engine.superannotate_detector import superannotate_detector
-        # Detect returns 0.0 (Human) to 1.0 (AI)
-        superannotate_score_val = superannotate_detector.detect(text)
-    except Exception as e:
-        print(f"SuperAnnotate analysis failed: {e}")
-        import traceback
-        traceback.print_exc()
     
+
     # ========== 3. Plagiarism Detection (Retrieve & Re-Rank) ==========
     plagiarism_segments = []
     total_plagiarism_len = 0
@@ -203,24 +286,23 @@ def process_analysis(text: str) -> AnalysisReport:
             source_metadata=best_match['metadata'] if is_plagiarized and best_match else None
         ))
 
-    # ========== 4. Calculate Scores ==========
+    # ========== 5. Calculate Scores ==========
     
-    # A. RoBERTa Score (Legacy - average of sentence scores)
-    if sentence_scores_list:
-        roberta_score = sum(s.ai_probability for s in sentence_scores_list) / len(sentence_scores_list)
-    else:
-        roberta_score = 0.0
+    # A. Model Score (SuperAnnotate - already calculated)
+    model_score = superannotate_score_val
     
     # B. Plagiarism Score (0-1) - Weighted by length
     plag_percent = (total_plagiarism_len / total_len) * 100
-    plagiarism_score = min(1.0, plag_percent / 20)  # Strickland assumption: 20%+ = max score (stricter)
-    # C. Statistical Metrics (Re-calculated for context)
-    perplexity = ai_detector.calculate_perplexity(text[:2000])
-    burstiness = ai_detector.analyze_burstiness(text)
-    perplexity_flux = ai_detector.calculate_perplexity_flux(text[:3000])
+    plagiarism_score = min(1.0, plag_percent / 20)  # 20%+ = max score
+    
+    # C. Statistical Metrics (Using CACHED perplexity values)
+    perplexity = np.mean([p for p in sentence_perplexities if p > 0]) if any(p > 0 for p in sentence_perplexities) else 0.0
+    burstiness = calculate_burstiness(sentence_lengths)
+    perplexity_flux = calculate_perplexity_flux(sentence_perplexities)
     
     # Use the new segments list
     segments = plagiarism_segments
+
     
     # C. Stylometry Score (already 0-1)
     stylometry_score_val = stylometry_report.stylometry_score if stylometry_report else 0.0
@@ -260,25 +342,23 @@ def process_analysis(text: str) -> AnalysisReport:
     # Weighted average: Flux is now the strongest specific signal
     statistical_penalty = (burstiness_penalty * 0.4 + flux_penalty * 0.6)
     
-    # D. Model-based score (RoBERTa)
-    model_score = roberta_score
-    ensemble_method = "roberta_stats"
+    # D. Model-based score (SuperAnnotate - already set as model_score above)
+    ensemble_method = "superannotate_stats"
+
     
     # E. Final AI Score: Use MAX of signals for aggressive detection
     # If any strong signal detected, use it as the score
     # This ensures high stylometry (1.0) or high model score results in high AI score
     
     # Calculate weighted average as baseline
-    # Updated weights: 
-    # - Model (40%): RoBERTa/Binoculars
-    # - Statistical (25%): Burstiness/Perplexity
-    # - Stylometry (35%): Phrase matching
-    # - SuperAnnotate (Additive influence)
+    # Updated weights (v3.0 - SuperAnnotate only): 
+    # - Model (50%): SuperAnnotate RoBERTa Large
+    # - Statistical (20%): Burstiness/Perplexity Flux
+    # - Stylometry (30%): Phrase matching
     weighted_score = (
-        model_score * 0.40 +
-        statistical_penalty * 0.25 +
-        stylometry_score_val * 0.35 +
-        superannotate_score_val * 0.40  # High weight for specialized model
+        model_score * 0.50 +
+        statistical_penalty * 0.20 +
+        stylometry_score_val * 0.30
     )
     weighted_score = min(1.0, weighted_score)
     
@@ -346,7 +426,7 @@ def process_analysis(text: str) -> AnalysisReport:
         metrics=AnalysisMetrics(
             # AI Detection (Ensemble)
             ai_score=ai_score,
-            roberta_score=round(roberta_score, 4),
+            roberta_score=round(model_score, 4),  # Now SuperAnnotate score (legacy field name)
             ensemble_method=ensemble_method,
             
             # Plagiarism
