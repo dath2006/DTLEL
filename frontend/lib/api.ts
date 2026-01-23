@@ -1,6 +1,6 @@
 import { AnalysisReport, IngestResponse } from "./types";
 
-const BASE_URL = "http://127.0.0.1:8000/api/v1";
+const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000/api/v1";
 
 export async function uploadDocument(file: File): Promise<AnalysisReport> {
   const formData = new FormData();
@@ -96,6 +96,7 @@ export async function clearDataPool(): Promise<{ message: string }> {
 }
 
 export async function checkHealth(): Promise<{ status: string }> {
-  const res = await fetch("http://127.0.0.1:8000/health");
+  const HEALTH_URL = process.env.NEXT_PUBLIC_API_BASE_URL?.replace('/api/v1', '') || "http://127.0.0.1:8000";
+  const res = await fetch(`${HEALTH_URL}/health`);
   return res.json();
 }
