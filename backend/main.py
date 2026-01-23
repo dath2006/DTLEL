@@ -24,4 +24,4 @@ def health_check():
 
 @app.get("/")
 def root():
-    return {"message": "Welcome to the Hybrid Integrity System API"}
+    return {"message": "Welcome to the Hybrid Integrity System API 's"}
