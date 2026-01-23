@@ -96,13 +96,25 @@ class PlagiarismEngine:
 
     def encode(self, texts: List[str]) -> np.ndarray:
         if self.use_onnx_sbert:
-            # ONNX Inference
-            inputs = self.sbert_tokenizer(texts, return_tensors="np", padding=True, truncation=True, max_length=512)
-            onnx_inputs = {
-                "input_ids": inputs["input_ids"].astype(np.int64),
-                "attention_mask": inputs["attention_mask"].astype(np.int64)
-            }
-            embeddings = self.sbert_session.run(None, onnx_inputs)[0]
+            # ONNX Inference with Batching
+            batch_size = 32
+            all_embeddings = []
+            
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i : i + batch_size]
+                inputs = self.sbert_tokenizer(batch_texts, return_tensors="np", padding=True, truncation=True, max_length=512)
+                onnx_inputs = {
+                    "input_ids": inputs["input_ids"].astype(np.int64),
+                    "attention_mask": inputs["attention_mask"].astype(np.int64)
+                }
+                batch_embeddings = self.sbert_session.run(None, onnx_inputs)[0]
+                all_embeddings.append(batch_embeddings)
+            
+            if not all_embeddings:
+                return np.array([])
+            
+            embeddings = np.vstack(all_embeddings)
+            
             # Normalize for cosine similarity
             norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
             embeddings = embeddings / np.maximum(norms, 1e-9)

@@ -50,7 +50,7 @@ export function AnalysisInput({ onFileUpload, onTextAnalysis, isAnalyzing }: Ana
   };
 
   const handleTextSubmit = () => {
-    if (text.trim()) onTextAnalysis(text);
+    if (text.length >= 350) onTextAnalysis(text);
   };
 
   return (
@@ -151,14 +151,20 @@ export function AnalysisInput({ onFileUpload, onTextAnalysis, isAnalyzing }: Ana
             <Card className="min-h-[300px] flex flex-col">
                 <CardContent className="pt-6 flex-1 flex flex-col gap-4">
                     <Textarea 
-                        placeholder="Paste your text here for analysis..." 
-                        className="flex-1 min-h-[200px] resize-none font-mono text-sm leading-relaxed"
+                        placeholder="Paste your text here for analysis... (Minimum 350 characters)" 
+                        className="flex-1 min-h-[200px] resize-none font-mono text-sm leading-relaxed focus:ring-0"
                         value={text}
                         onChange={(e) => setText(e.target.value)}
                         disabled={isAnalyzing}
                     />
-                    <div className="flex justify-end">
-                        <Button onClick={handleTextSubmit} disabled={isAnalyzing || !text.trim()} className="w-full sm:w-auto">
+                    <div className="flex items-center justify-between gap-4">
+                        <div className={cn(
+                            "text-xs transition-colors",
+                            text.length >= 350 ? "text-green-600 font-medium" : "text-muted-foreground"
+                        )}>
+                            {text.length} / 350 characters
+                        </div>
+                        <Button onClick={handleTextSubmit} disabled={isAnalyzing || text.length < 350} className="w-full sm:w-auto">
                             {isAnalyzing ? (
                                 <>
                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
