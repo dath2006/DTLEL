@@ -116,8 +116,9 @@ def process_analysis(text: str) -> AnalysisReport:
     if not text.strip():
         raise HTTPException(status_code=400, detail="Empty text provided")
     
-    # ========== 0. Extract Sentences (for all downstream use) ==========
+    # ========== 0. Extract Sentences & Create Windows ==========
     sentences = []  # List of (text, start, end) tuples
+    windows = []    # List of SentenceWindow objects
     sentence_texts = []
     sentence_lengths = []
     
@@ -126,12 +127,21 @@ def process_analysis(text: str) -> AnalysisReport:
         if sentences:
             sentence_texts = [s[0] for s in sentences]
             sentence_lengths = [len(s[0].split()) for s in sentences]
+        else:
+            # No sentences found, fallback
+            sentences = [(text, 0, len(text))]
+            sentence_texts = [text]
+            sentence_lengths = [len(text.split())]
+            windows = []
     except Exception as e:
         print(f"Sentence extraction failed: {e}")
+        import traceback
+        traceback.print_exc()
         # Fallback: treat whole text as one sentence
         sentences = [(text, 0, len(text))]
         sentence_texts = [text]
         sentence_lengths = [len(text.split())]
+        windows = []
     
     # ========== 1. Calculate Perplexity ONCE (Cached for reuse) ==========
     sentence_perplexities = []
@@ -141,44 +151,97 @@ def process_analysis(text: str) -> AnalysisReport:
         print(f"Perplexity calculation failed: {e}")
         sentence_perplexities = [0.0] * len(sentence_texts)
     
-    # ========== 2. SuperAnnotate AI Detection (Primary) ==========
-    superannotate_score_val = 0.0
-    try:
-        superannotate_score_val = superannotate_detector.detect(text)
-    except Exception as e:
-        print(f"SuperAnnotate analysis failed: {e}")
-        import traceback
-        traceback.print_exc()
+    # ========== 2. HYBRID AI Detection (Global + Window) ==========
+    # Strategy: Use global score as anchor, window scores for granularity
     
-    # ========== 3. Build Sentence Scores ==========
-    # Use SuperAnnotate's global score as base, modulated by local perplexity
+    # A. First, get the GLOBAL document score (this is what works best)
+    global_ai_score = 0.0
+    try:
+        global_ai_score = superannotate_detector.detect(text)
+        print(f"Global document AI score: {global_ai_score:.4f}")
+    except Exception as e:
+        print(f"Global detection failed: {e}")
+    
+    # B. Then, get WINDOW scores for granular variation
+    window_scores = []
+    if windows:
+        try:
+            window_texts = [w.text for w in windows]
+            window_scores = superannotate_detector.detect_batch(window_texts)
+            print(f"Processed {len(windows)} windows for {len(sentences)} sentences")
+            print(f"Window scores range: {min(window_scores):.3f} - {max(window_scores):.3f}")
+        except Exception as e:
+            print(f"Window detection failed: {e}")
+            window_scores = []
+    
+    # ========== 3. Aggregate with Global Anchoring ==========
+    # Each sentence gets: BLEND of global score (anchor) + local window score (variation)
+    # This prevents the "low score" problem while maintaining granularity
+    
     sentence_scores_list = []
     ai_sentence_count = 0
     
-    for i, (sent_text, start, end) in enumerate(sentences):
-        ppl = sentence_perplexities[i] if i < len(sentence_perplexities) else 0.0
+    if window_scores and len(window_scores) == len(windows):
+        # Get raw sentence scores from window aggregation
+        sentence_results = sentence_splitter.aggregate_to_sentences(
+            windows, window_scores, sentences, threshold=0.5
+        )
         
-        # Use global AI score as baseline for each sentence
-        # Low perplexity (< 30) suggests AI, boost the score
-        ppl_modifier = 0.0
-        if ppl > 0 and ppl < 30:
-            ppl_modifier = 0.1  # Slight boost for low perplexity
+        # Blend: 60% global anchor + 40% local window score
+        # This ensures high global detection still shows, but with variation
+        GLOBAL_WEIGHT = 0.6
+        LOCAL_WEIGHT = 0.4
         
-        sentence_ai_prob = min(1.0, superannotate_score_val + ppl_modifier)
-        is_ai = sentence_ai_prob > 0.5
-        
-        sentence_scores_list.append(SentenceScore(
-            text=sent_text,
-            index=i,
-            start_char=start,
-            end_char=end,
-            ai_probability=round(sentence_ai_prob, 4),
-            is_ai_generated=is_ai,
-            perplexity=round(ppl, 2),
-            window_count=1  # No windowing needed with SuperAnnotate
-        ))
-        if is_ai:
-            ai_sentence_count += 1
+        for i, sr in enumerate(sentence_results):
+            ppl = sentence_perplexities[i] if i < len(sentence_perplexities) else 0.0
+            
+            # Hybrid score: anchor to global, vary by local
+            hybrid_score = (global_ai_score * GLOBAL_WEIGHT) + (sr.score * LOCAL_WEIGHT)
+            
+            # Boost if perplexity is suspiciously low (AI-like)
+            if ppl > 0 and ppl < 25:
+                hybrid_score = min(1.0, hybrid_score + 0.05)
+            
+            hybrid_score = round(min(1.0, max(0.0, hybrid_score)), 4)
+            is_ai = hybrid_score > 0.5
+            
+            sentence_scores_list.append(SentenceScore(
+                text=sr.text,
+                index=sr.index,
+                start_char=sr.start_char,
+                end_char=sr.end_char,
+                ai_probability=hybrid_score,
+                is_ai_generated=is_ai,
+                perplexity=round(ppl, 2),
+                window_count=sr.window_count
+            ))
+            if is_ai:
+                ai_sentence_count += 1
+    else:
+        # Fallback: Only global score available
+        for i, (sent_text, start, end) in enumerate(sentences):
+            ppl = sentence_perplexities[i] if i < len(sentence_perplexities) else 0.0
+            ppl_modifier = 0.05 if (ppl > 0 and ppl < 25) else 0.0
+            score = min(1.0, global_ai_score + ppl_modifier)
+            is_ai = score > 0.5
+            
+            sentence_scores_list.append(SentenceScore(
+                text=sent_text,
+                index=i,
+                start_char=start,
+                end_char=end,
+                ai_probability=round(score, 4),
+                is_ai_generated=is_ai,
+                perplexity=round(ppl, 2),
+                window_count=0
+            ))
+            if is_ai:
+                ai_sentence_count += 1
+    
+    # Overall score is now the global document score (most reliable)
+    superannotate_score_val = global_ai_score
+
+
 
     
     # ========== 4. Stylometric Analysis ==========
@@ -356,21 +419,23 @@ def process_analysis(text: str) -> AnalysisReport:
     # - Statistical (20%): Burstiness/Perplexity Flux
     # - Stylometry (30%): Phrase matching
     weighted_score = (
-        model_score * 0.50 +
-        statistical_penalty * 0.20 +
-        stylometry_score_val * 0.30
+        model_score * 0.80 +
+        statistical_penalty * 0.10 +
+        stylometry_score_val * 0.10
     )
     weighted_score = min(1.0, weighted_score)
     
     # Use maximum of: weighted average, stylometry, model score
     # This ensures any strong signal dominates
-    # Score Boosting: Map SuperAnnotate's conservative range (max ~0.75-0.80) to full 1.0 scale
-    # If the specialized detector is > 0.7, it's almost certainly AI.
+    # Score Boosting: Map SuperAnnotate's conservative range to full 1.0 scale
+    # Boosting starts at 57% (user-configured threshold)
     boosted_sa_score = superannotate_score_val
-    if superannotate_score_val > 0.7:
-        boosted_sa_score = 0.9 + ((superannotate_score_val - 0.7) * 0.33)  # Map 0.7->0.9, 1.0->1.0
-    elif superannotate_score_val > 0.5:
-        boosted_sa_score = 0.6 + ((superannotate_score_val - 0.5) * 1.5)   # Map 0.5->0.6, 0.7->0.9
+    if superannotate_score_val > 0.70:
+        # Strong AI signal: 0.70 → 0.92, 0.80 → 0.97
+        boosted_sa_score = 0.92 + ((superannotate_score_val - 0.70) * 0.5)
+    elif superannotate_score_val > 0.57:
+        # Moderate AI signal: 0.57 → 0.75, 0.70 → 0.92
+        boosted_sa_score = 0.75 + ((superannotate_score_val - 0.57) * 1.31)
 
     ai_score = max(
         weighted_score, 

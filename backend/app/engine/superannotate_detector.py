@@ -200,6 +200,70 @@ class SuperAnnotateDetector:
         weighted_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
         return round(weighted_score, 4)
 
+    def detect_batch(self, texts: List[str], batch_size: int = 8) -> List[float]:
+        """
+        Detect AI probability for multiple text windows in batches.
+        
+        Optimized for sliding window detection where each window is 3-5 sentences.
+        Uses batch inference for GPU efficiency.
+        
+        Args:
+            texts: List of text windows to analyze
+            batch_size: Number of windows to process at once
+            
+        Returns:
+            List of scores (0.0 to 1.0) for each input text
+        """
+        if not texts:
+            return []
+            
+        if not self._initialized:
+            self._initialize()
+        
+        all_scores = []
+        
+        # Process in batches for memory efficiency
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            batch_scores = []
+            
+            for text in batch_texts:
+                # Quick preprocessing - no code block handling for windows
+                # (code blocks are unlikely to span multiple sentences cleanly)
+                processed = preprocessing_text(text)
+                
+                if len(processed.strip()) < 20:
+                    # Too short to analyze meaningfully
+                    batch_scores.append(0.5)  # Neutral score
+                    continue
+                
+                # Truncate to max length if needed (windows should be small)
+                if len(self.tokenizer.encode(processed, add_special_tokens=False)) > self.max_len - 2:
+                    processed = processed[:1500]  # Rough char limit
+                
+                batch_scores.append(processed)
+            
+            # Separate actual texts from placeholder scores
+            texts_to_process = [t for t in batch_scores if isinstance(t, str)]
+            
+            if texts_to_process:
+                # Batch inference
+                scores = self.__predict_chunks(texts_to_process)
+                
+                # Merge back with placeholders
+                score_iter = iter(scores)
+                final_batch_scores = []
+                for item in batch_scores:
+                    if isinstance(item, str):
+                        final_batch_scores.append(next(score_iter))
+                    else:
+                        final_batch_scores.append(item)
+                all_scores.extend(final_batch_scores)
+            else:
+                all_scores.extend(batch_scores)
+        
+        return [round(s, 4) for s in all_scores]
+
     @property
     def is_available(self) -> bool:
         return self._initialized
