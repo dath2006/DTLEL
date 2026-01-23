@@ -7,7 +7,7 @@ app = FastAPI(title="Hybrid AI & Plagiarism Detection System", version="1.0.0")
 # CORS setup (Allow frontend)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:8000","https://*.vercel.app"],
+    allow_origins=["http://localhost:3000", "http://localhost:8000","https://dtlel.vercel.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
