@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Development & Testing
+test_*.py
+verify_*.py
+check_import.py
+desklib.py
+*.md
+!README.md
+
+# Frontend (explicitly excluded)
+../frontend/
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+
+# Data (will be mounted as volumes)
+vector_store/
+onnx_models/
+*.pkl
+*.index
+
+# Documentation
+*.pdf
+research.md
+BACKEND_ARCHITECTURE_REPORT.md
+statistical_metrics_report.md

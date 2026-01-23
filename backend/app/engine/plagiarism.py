@@ -2,8 +2,10 @@ import faiss
 import numpy as np
 import pickle
 import os
+import onnxruntime as ort
 from sentence_transformers import SentenceTransformer, CrossEncoder
-from typing import List, Tuple, Dict, Any
+from transformers import AutoTokenizer
+from typing import List, Tuple, Dict, Any, Optional
 from app.config import settings
 
 class PlagiarismEngine:
@@ -12,16 +14,57 @@ class PlagiarismEngine:
         self.index_path = os.path.join(self.vector_store_path, "plagiarism.index")
         self.metadata_path = os.path.join(self.vector_store_path, "metadata.pkl")
         
+        # ONNX paths
+        self.sbert_onnx_path = "onnx_models/sbert/model.onnx"
+        self.cross_encoder_onnx_path = "onnx_models/cross_encoder/model.onnx"
+        
+        self.use_onnx_sbert = False
+        self.use_onnx_cross_encoder = False
+        
         if not os.path.exists(self.vector_store_path):
             os.makedirs(self.vector_store_path)
 
-        print("Loading Plagiarism Model (SBERT)...")
-        self.model = SentenceTransformer(settings.PLAGIARISM_MODEL_NAME, device=settings.DEVICE)
-        self.embedding_dim = self.model.get_sentence_embedding_dimension()
+        # ========== SBERT Loading ==========
+        if os.path.exists(self.sbert_onnx_path):
+            print(f"Loading SBERT (ONNX) from {self.sbert_onnx_path}...")
+            try:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if settings.DEVICE == "cuda" else ['CPUExecutionProvider']
+                sess_options = ort.SessionOptions()
+                sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                self.sbert_session = ort.InferenceSession(self.sbert_onnx_path, sess_options, providers=providers)
+                self.sbert_tokenizer = AutoTokenizer.from_pretrained("onnx_models/sbert/tokenizer")
+                self.use_onnx_sbert = True
+                self.embedding_dim = 768  # all-mpnet-base-v2 dimension
+                print("SBERT (ONNX) Ready.")
+            except Exception as e:
+                print(f"Failed to load SBERT ONNX: {e}. Falling back to PyTorch.")
         
-        print("Loading Cross-Encoder (Re-Ranker)...")
-        # Load the Re-Ranker model recommended for paraphrase detection
-        self.cross_encoder = CrossEncoder('cross-encoder/stsb-roberta-large', device=settings.DEVICE)
+        if not self.use_onnx_sbert:
+            print("Loading Plagiarism Model (SBERT - PyTorch)...")
+            self.model = SentenceTransformer(settings.PLAGIARISM_MODEL_NAME, device=settings.DEVICE)
+            self.embedding_dim = self.model.get_sentence_embedding_dimension()
+            if settings.DEVICE == "cuda":
+                self.model.half()
+
+        # ========== Cross-Encoder Loading ==========
+        if os.path.exists(self.cross_encoder_onnx_path):
+            print(f"Loading Cross-Encoder (ONNX) from {self.cross_encoder_onnx_path}...")
+            try:
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if settings.DEVICE == "cuda" else ['CPUExecutionProvider']
+                sess_options = ort.SessionOptions()
+                sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                self.cross_encoder_session = ort.InferenceSession(self.cross_encoder_onnx_path, sess_options, providers=providers)
+                self.cross_encoder_tokenizer = AutoTokenizer.from_pretrained("onnx_models/cross_encoder/tokenizer")
+                self.use_onnx_cross_encoder = True
+                print("Cross-Encoder (ONNX) Ready.")
+            except Exception as e:
+                print(f"Failed to load Cross-Encoder ONNX: {e}. Falling back to PyTorch.")
+        
+        if not self.use_onnx_cross_encoder:
+            print("Loading Cross-Encoder (Re-Ranker - PyTorch)...")
+            self.cross_encoder = CrossEncoder('cross-encoder/stsb-roberta-large', device=settings.DEVICE)
+            if settings.DEVICE == "cuda":
+                self.cross_encoder.model.half()
         
         self.metadata_store: Dict[int, Dict[str, Any]] = {} 
         self.current_id = 0
@@ -31,10 +74,7 @@ class PlagiarismEngine:
             self.load()
         else:
             print("Initializing new FAISS Index...")
-            if settings.DEVICE == "cuda":
-                self.index = faiss.IndexFlatIP(self.embedding_dim)
-            else:
-                self.index = faiss.IndexFlatIP(self.embedding_dim)
+            self.index = faiss.IndexFlatIP(self.embedding_dim)
 
         print("Plagiarism Engine Ready.")
 
@@ -55,8 +95,22 @@ class PlagiarismEngine:
             self.current_id = data["current_id"]
 
     def encode(self, texts: List[str]) -> np.ndarray:
-        embeddings = self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
-        return embeddings
+        if self.use_onnx_sbert:
+            # ONNX Inference
+            inputs = self.sbert_tokenizer(texts, return_tensors="np", padding=True, truncation=True, max_length=512)
+            onnx_inputs = {
+                "input_ids": inputs["input_ids"].astype(np.int64),
+                "attention_mask": inputs["attention_mask"].astype(np.int64)
+            }
+            embeddings = self.sbert_session.run(None, onnx_inputs)[0]
+            # Normalize for cosine similarity
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            embeddings = embeddings / np.maximum(norms, 1e-9)
+            return embeddings
+        else:
+            # PyTorch Fallback
+            embeddings = self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+            return embeddings
 
     def add_to_index(self, texts: List[str], metadatas: List[Dict[str, Any]]):
         if not texts:
@@ -132,12 +186,27 @@ class PlagiarismEngine:
         if not pairs:
             return []
         
-        # CrossEncoder.predict returns numpy array or float
-        scores = self.cross_encoder.predict(pairs)
-        
-        if isinstance(scores, (int, float)):
-            return [float(scores)]
-        
-        return [float(s) for s in scores]
+        if self.use_onnx_cross_encoder:
+            # ONNX Inference
+            scores = []
+            for query, candidate in pairs:
+                inputs = self.cross_encoder_tokenizer(query, candidate, return_tensors="np", padding=True, truncation=True, max_length=512)
+                onnx_inputs = {
+                    "input_ids": inputs["input_ids"].astype(np.int64),
+                    "attention_mask": inputs["attention_mask"].astype(np.int64)
+                }
+                logits = self.cross_encoder_session.run(None, onnx_inputs)[0]
+                # Sigmoid for probability
+                score = 1 / (1 + np.exp(-logits[0][0]))
+                scores.append(float(score))
+            return scores
+        else:
+            # PyTorch Fallback
+            scores = self.cross_encoder.predict(pairs)
+            
+            if isinstance(scores, (int, float)):
+                return [float(scores)]
+            
+            return [float(s) for s in scores]
 
 plagiarism_engine = PlagiarismEngine()
