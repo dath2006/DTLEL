@@ -50,11 +50,11 @@ def process_analysis(text: str) -> AnalysisReport:
         windows, sentences = sentence_splitter.create_windows(text)
         
         if windows and sentences:
-            # Score each sentence individually with RoBERTa
-            sentence_texts = [s[0] for s in sentences]  # (text, start, end)
-            window_scores = ai_detector.detect_probability(sentence_texts)
+            # Score WINDOWS (groups of sentences) with RoBERTa/Binoculars
+            window_texts = [w.text for w in windows]
+            window_scores = ai_detector.detect_probability(window_texts)
             
-            # Aggregate to sentence level
+            # Aggregate window scores back to individual sentences
             sentence_results = sentence_splitter.aggregate_to_sentences(
                 windows, window_scores, sentences, threshold=0.5
             )
@@ -98,7 +98,11 @@ def process_analysis(text: str) -> AnalysisReport:
             phrase_density=style_result.phrase_density,
             category_breakdown=style_result.category_breakdown,
             top_phrases=style_result.top_phrases,
-            stylometry_score=style_result.stylometry_score
+            stylometry_score=style_result.stylometry_score,
+            readability_score=style_result.readability_score,
+            avg_sentence_length=style_result.avg_sentence_length,
+            complex_word_ratio=style_result.complex_word_ratio,
+            vocabulary_richness=style_result.vocabulary_richness
         )
     except Exception as e:
         print(f"Stylometry analysis failed: {e}")
@@ -320,7 +324,7 @@ def process_analysis(text: str) -> AnalysisReport:
             
             # Contextual Boost: The sentence is part of a document we KNOW is AI.
             # We treat the global score as a "prior probability".
-            boosted_score = (original_score * 0.2) + (ai_score * 0.8)
+            boosted_score = (original_score * 0.4) + (ai_score * 0.6)
             
             # Update the sentence object
             sent.ai_probability = round(boosted_score, 4)
@@ -328,6 +332,11 @@ def process_analysis(text: str) -> AnalysisReport:
             
             # Recount flagged sentences
             ai_sentence_count = sum(1 for s in sentence_scores_list if s.is_ai_generated)
+        
+        # Sync segments with boosted scores
+        if sentences and len(segments) == len(sentence_scores_list):
+            for i, sent in enumerate(sentence_scores_list):
+                 segments[i].ai_probability = sent.ai_probability
 
     # ========== 8. Build Report ==========
     return AnalysisReport(

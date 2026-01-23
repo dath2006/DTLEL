@@ -174,10 +174,10 @@ class SentenceWindowSplitter:
 
 
 # Singleton instance with default config
-sentence_splitter = SentenceWindowSplitter(window_size=4, stride=1)
+sentence_splitter = SentenceWindowSplitter(window_size=6, stride=1)
 
 
-def split_into_sentence_windows(text: str, window_size: int = 4, stride: int = 1) -> Tuple[List[SentenceWindow], List[Tuple[str, int, int]]]:
+def split_into_sentence_windows(text: str, window_size: int = 6, stride: int = 1) -> Tuple[List[SentenceWindow], List[Tuple[str, int, int]]]:
     """
     Convenience function to split text into sentence windows.
     

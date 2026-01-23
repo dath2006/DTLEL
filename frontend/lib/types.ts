@@ -20,6 +20,12 @@ export interface StylemetryReport {
   category_breakdown: Record<string, number>;
   top_phrases: [string, number][];
   stylometry_score: number;
+  
+  // Dynamic Metrics
+  readability_score: number;
+  avg_sentence_length: number;
+  complex_word_ratio: number;
+  vocabulary_richness: number;
 }
 
 // ========== Sentence-Level Types ==========

@@ -25,6 +25,12 @@ class StylemetryReport(BaseModel):
     category_breakdown: Dict[str, int]
     top_phrases: List[tuple]        # [(phrase, count), ...]
     stylometry_score: float         # 0.0 (clean) to 1.0 (saturated)
+    
+    # Dynamic Stylometry Metrics
+    readability_score: float = 0.0  # Flesch Reading Ease
+    avg_sentence_length: float = 0.0
+    complex_word_ratio: float = 0.0
+    vocabulary_richness: float = 0.0 # TTR
 
 
 # ========== Sentence-Level Models ==========

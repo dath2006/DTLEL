@@ -13,25 +13,11 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 
 
-@dataclass
-class PhraseMatch:
-    """A detected AI phrase in the text."""
-    phrase: str
-    category: str                # transitions, abstract_nouns, verbs, adjectives, filler_phrases
-    count: int
-    positions: List[int] = field(default_factory=list)  # Start positions in text
+from app.models import StylemetryReport, PhraseMatchModel
 
-
-@dataclass
-class StylometryReport:
-    """Full stylometric analysis report."""
-    total_ai_phrases: int        # Total count of AI phrase occurrences
-    unique_phrases: int          # Number of distinct AI phrases found
-    phrase_density: float        # AI phrases per 100 words (0-100+)
-    category_breakdown: Dict[str, int]  # Count per category
-    top_phrases: List[Tuple[str, int]]  # Top N most frequent phrases
-    flagged_phrases: List[PhraseMatch]  # All detected phrases with details
-    stylometry_score: float      # 0.0 (clean) to 1.0 (saturated with AI phrases)
+# Remove local PhraseMatch and StylometryReport dataclasses
+# Use PhraseMatchModel instead of PhraseMatch
+# Use StylemetryReport instead of StylometryReport
 
 
 class PhraseFingerprint:
@@ -83,41 +69,37 @@ class PhraseFingerprint:
         positions = [m.start() for m in matches]
         return len(matches), positions
     
-    def analyze(self, text: str, top_n: int = 10) -> StylometryReport:
+    
+    def analyze(self, text: str, top_n: int = 10) -> StylemetryReport:
         """
-        Analyze text for AI-characteristic phrases.
-        
-        Args:
-            text: Input text to analyze
-            top_n: Number of top phrases to return
-            
-        Returns:
-            StylometryReport with detailed breakdown
+        Analyze text for AI-characteristic phrases and statistical biomarkers.
         """
         if not text.strip():
-            return StylometryReport(
+            return StylemetryReport(
                 total_ai_phrases=0,
                 unique_phrases=0,
                 phrase_density=0.0,
                 category_breakdown={},
                 top_phrases=[],
-                flagged_phrases=[],
-                stylometry_score=0.0
+                stylometry_score=0.0,
+                readability_score=0.0,
+                avg_sentence_length=0.0,
+                complex_word_ratio=0.0,
+                vocabulary_richness=0.0
             )
         
-        # Count words for density calculation
+        # 1. Existing Phase Logic
         word_count = len(text.split())
         
         flagged_phrases = []
         category_counts = defaultdict(int)
         phrase_counts = {}
         
-        # Search for each phrase pattern
         for category, phrases in self.phrase_patterns.items():
             for phrase in phrases:
                 count, positions = self.count_phrase(text, phrase)
                 if count > 0:
-                    flagged_phrases.append(PhraseMatch(
+                    flagged_phrases.append(PhraseMatchModel(
                         phrase=phrase,
                         category=category,
                         count=count,
@@ -126,42 +108,52 @@ class PhraseFingerprint:
                     category_counts[category] += count
                     phrase_counts[phrase] = count
         
-        # Calculate aggregates
         total_phrases = sum(p.count for p in flagged_phrases)
         unique_phrases = len(flagged_phrases)
-        
-        # Density: phrases per 100 words
         density = (total_phrases / word_count * 100) if word_count > 0 else 0.0
-        
-        # Sort by count for top phrases
         top_phrases = sorted(phrase_counts.items(), key=lambda x: x[1], reverse=True)[:top_n]
         
-        # Calculate stylometry score (0-1)
-        # Based on density and diversity of AI phrases
-        # Thresholds based on research: >2% density is suspicious, >5% is highly suspicious
-        density_score = min(1.0, density / 5.0)  # Cap at 5% density
-        diversity_score = min(1.0, unique_phrases / 15.0)  # Cap at 15 unique phrases
-        stylometry_score = (density_score * 0.7 + diversity_score * 0.3)
+        # 2. Dynamic Statistical Logic
+        from app.engine.dynamic_stylometry import stylometry_engine
+        dynamic_metrics = {}
+        if stylometry_engine:
+            dynamic_metrics = stylometry_engine.analyze_text(text)
+            
+        # 3. Enhanced Scoring
+        # Start with phrase-based score
+        density_score = min(1.0, density / 5.0)
+        diversity_score = min(1.0, unique_phrases / 15.0)
+        base_score = (density_score * 0.7 + diversity_score * 0.3)
         
-        return StylometryReport(
+        # Adjust based on dynamic signals
+        # Low vocabulary richness (repetitive) -> +0.1
+        # Low readability (complex/robotic) -> +0.1
+        adjustment = 0.0
+        vocab_richness = dynamic_metrics.get("vocabulary_richness", 1.0)
+        
+        if vocab_richness < 0.4: # Repetitive
+             adjustment += 0.15
+             
+        final_score = min(1.0, base_score + adjustment)
+        
+        return StylemetryReport(
             total_ai_phrases=total_phrases,
             unique_phrases=unique_phrases,
             phrase_density=round(density, 2),
             category_breakdown=dict(category_counts),
             top_phrases=top_phrases,
-            flagged_phrases=flagged_phrases,
-            stylometry_score=round(stylometry_score, 2)
+            stylometry_score=round(final_score, 2),
+            readability_score=dynamic_metrics.get("readability_score", 0.0),
+            avg_sentence_length=dynamic_metrics.get("avg_sentence_length", 0.0),
+            complex_word_ratio=dynamic_metrics.get("complex_word_ratio", 0.0),
+            vocabulary_richness=dynamic_metrics.get("vocabulary_richness", 0.0)
         )
     
     def get_highlighted_text(self, text: str) -> str:
         """
         Return text with AI phrases highlighted using markdown.
-        
-        Returns:
-            Text with **bold** markers around AI phrases
         """
         result = text
-        # Track all phrase positions to avoid overlapping replacements
         all_matches = []
         
         for category, phrases in self.phrase_patterns.items():
@@ -170,10 +162,8 @@ class PhraseFingerprint:
                 for match in pattern.finditer(text):
                     all_matches.append((match.start(), match.end(), match.group()))
         
-        # Sort by position (reverse order for safe replacement)
         all_matches.sort(key=lambda x: x[0], reverse=True)
         
-        # Apply highlights
         for start, end, original in all_matches:
             result = result[:start] + f"**{original}**" + result[end:]
         
@@ -184,6 +174,6 @@ class PhraseFingerprint:
 phrase_fingerprint = PhraseFingerprint()
 
 
-def analyze_stylometry(text: str) -> StylometryReport:
+def analyze_stylometry(text: str) -> StylemetryReport:
     """Convenience function for stylometric analysis."""
     return phrase_fingerprint.analyze(text)

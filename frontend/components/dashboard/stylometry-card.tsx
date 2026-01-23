@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
 import { StylemetryReport } from "@/lib/types";
-import { MessageSquareWarning, Hash, TrendingUp } from "lucide-react";
+import { MessageSquareWarning, Hash, TrendingUp, BookOpen } from "lucide-react";
 
 interface StylometryCardProps {
   stylometry: StylemetryReport;
@@ -132,6 +132,47 @@ export function StylometryCard({ stylometry }: StylometryCardProps) {
           </div>
         </div>
       </CardContent>
+      {/* Linguistic Analysis Section */}
+      <div className="border-t bg-muted/20 p-4">
+        <div className="text-sm font-medium flex items-center gap-2 mb-3">
+          <BookOpen className="h-4 w-4 text-primary" />
+          Linguistic Biomarkers
+        </div>
+        
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Readability</span>
+              <span className="font-medium">{stylometry.readability_score.toFixed(1)}</span>
+            </div>
+            <Progress value={Math.max(0, Math.min(100, stylometry.readability_score))} className="h-1.5" />
+            <div className="text-[10px] text-muted-foreground text-right">
+              {stylometry.readability_score > 60 ? "Easy" : stylometry.readability_score > 30 ? "Moderate" : "Complex"}
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-muted-foreground">Vocab Richness</span>
+              <span className="font-medium">{(stylometry.vocabulary_richness * 100).toFixed(0)}%</span>
+            </div>
+            <Progress value={stylometry.vocabulary_richness * 100} className="h-1.5" />
+             <div className="text-[10px] text-muted-foreground text-right">
+              {stylometry.vocabulary_richness > 0.6 ? "Rich" : "Repetitive"}
+            </div>
+          </div>
+          
+          <div className="bg-background rounded-md p-2 border text-center">
+             <div className="text-lg font-bold">{stylometry.avg_sentence_length.toFixed(1)}</div>
+             <div className="text-[10px] text-muted-foreground">Avg Sentence Len</div>
+          </div>
+          
+           <div className="bg-background rounded-md p-2 border text-center">
+             <div className="text-lg font-bold">{(stylometry.complex_word_ratio * 100).toFixed(1)}%</div>
+             <div className="text-[10px] text-muted-foreground">Complex Words</div>
+          </div>
+        </div>
+      </div>
     </Card>
   );
 }

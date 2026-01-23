@@ -50,6 +50,18 @@ export function MetricsGrid({ metrics }: MetricsGridProps) {
       color: "text-orange-500"
     });
   }
+
+  // New Stylometry Cards
+  if (metrics.phrase_density !== undefined) { // Proxies for availability of new stylometry
+     // Readability
+     // Note: We need to access these from the stylometry report in practice or add them to AnalysisMetrics.
+     // For now, let's assume if stylometry_score is present, we might want to expose them if we added them to AnalysisMetrics.
+     // Current plan only added them to StylemetryReport which is nested in AnalysisReport.
+     // So MetricsGrid (which takes AnalysisMetrics) might not have direct access unless we update AnalysisMetrics too.
+     // checking back types.ts -> AnalysisMetrics was NOT updated, only StylemetryReport.
+     // So I will skip adding them here to avoid compilation errors, or I need to update AnalysisMetrics in backend too.
+     // Decision: Skip for now to keep it simple as they are in the StylometryCard.
+  }
   
   if (metrics.sentence_count !== null && metrics.sentence_count !== undefined) {
     newItems.push({
