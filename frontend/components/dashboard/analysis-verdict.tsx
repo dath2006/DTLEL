@@ -88,16 +88,27 @@ export function AnalysisVerdict({ report }: AnalysisVerdictProps) {
         </div>
       </CardHeader>
       
-      {highlights.length > 0 && (
+      {(highlights.length > 0 || stylometry_score > 0.6) && (
         <CardContent>
-          <div className="mt-2 p-3 bg-muted/50 rounded-md text-sm">
-             <span className="font-semibold mb-2 block text-foreground">Key Findings:</span>
-             <ul className="list-disc list-inside space-y-1 text-muted-foreground">
-               {highlights.map((point, i) => (
-                 <li key={i}>{point}</li>
-               ))}
-             </ul>
-          </div>
+          {highlights.length > 0 && (
+            <div className="mt-2 p-3 bg-muted/50 rounded-md text-sm">
+               <span className="font-semibold mb-2 block text-foreground">Key Findings:</span>
+               <ul className="list-disc list-inside space-y-1 text-muted-foreground">
+                 {highlights.map((point, i) => (
+                   <li key={i}>{point}</li>
+                 ))}
+               </ul>
+            </div>
+          )}
+
+          {stylometry_score > 0.6 && (
+            <div className="mt-4 p-3 bg-amber-50 border border-amber-200 dark:bg-amber-900/10 dark:border-amber-800/30 rounded-md text-sm">
+                <span className="font-bold text-amber-800 dark:text-amber-500">Important NOTE: </span>
+                <span className="text-amber-800/90 dark:text-amber-500/90">
+                  The detection is more likely false positive as the provided contents has more technicality or formal words.
+                </span>
+            </div>
+          )}
         </CardContent>
       )}
     </Card>
