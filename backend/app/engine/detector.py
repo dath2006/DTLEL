@@ -117,8 +117,10 @@ class AIDetector:
         if not nlls:
             return 0.0
             
-        ppl = torch.exp(torch.stack(nlls).mean())
-        return ppl.item()
+        ppl_val = torch.exp(torch.stack(nlls).mean()).item()
+        if math.isnan(ppl_val) or math.isinf(ppl_val):
+            return 0.0
+        return ppl_val
 
     def calculate_perplexity_flux(self, text: str) -> float:
         """
@@ -154,7 +156,10 @@ class AIDetector:
         if mean_ppl == 0:
             return 0.0
             
-        return std_ppl / mean_ppl
+        flux = std_ppl / mean_ppl
+        if math.isnan(flux) or math.isinf(flux):
+            return 0.0
+        return float(flux)
 
     def analyze_burstiness(self, text: str) -> float:
         """
@@ -177,6 +182,9 @@ class AIDetector:
             return 0.0
             
         # Coefficient of variation as a proxy for burstiness
-        return std_dev / mean
+        val = std_dev / mean
+        if math.isnan(val) or math.isinf(val):
+            return 0.0
+        return float(val)
 
 ai_detector = AIDetector()
