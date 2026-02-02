@@ -298,7 +298,6 @@ def process_analysis(text: str) -> AnalysisReport:
 
     ai_score = max(
         weighted_score, 
-        stylometry_score_val,         # Trust strong stylometry fully (1.0)
         model_score,                  # Trust strong model confidence fully (1.0)
         boosted_sa_score              # Trust boosted specialized detector
     )
